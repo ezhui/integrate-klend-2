@@ -19,6 +19,7 @@ use spl_token;
 use super::UserTestContext;
 
 pub enum MintType {
+    Sol,
     JitoSol,
 }
 
@@ -38,7 +39,8 @@ impl RateXTestContext {
 
         // Initialize users
         let mut users: Vec<UserTestContext> = vec![];
-        for _ in 0..8 {
+        users.push(UserTestContext::new_admin_user(context.clone()).await);
+        for _ in 0..2 {
             let user = UserTestContext::new(context.clone()).await;
             users.push(user);
         }
@@ -101,6 +103,7 @@ impl RateXTestContext {
     ) {
         let mint_address = match mint_type {
             MintType::JitoSol => &JITOSOL_MINT,
+            MintType::Sol => &spl_token::native_mint::id(),
         };
 
         self.mint_token(mint_address, &self.admin, &utc.user, amount)
@@ -114,7 +117,7 @@ impl RateXTestContext {
 
         clock.epoch_start_timestamp = time;
         clock.unix_timestamp = time;
-        clock.slot = time as u64;
+        clock.slot = 298271839;
 
         self.context.borrow_mut().set_sysvar::<Clock>(&clock);
     }

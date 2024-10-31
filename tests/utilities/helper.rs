@@ -28,8 +28,6 @@ pub const ENDOAVS_SSOL_VAULT: Pubkey = pubkey!("Bc7hj6aFhBRihZ8dYp8qXWbuDBXYMya4
 pub const ENDOAVS_SONIC: Pubkey = pubkey!("HBkJwH6rjUUBK1wNhBuYgo9Wnk1iCx2phduyxWCQj6uk");
 pub const SONIC_SSOL: Pubkey = pubkey!("sonickAJFiVLcYXx25X9vpF293udaWqDMUCiGtk7dg2");
 
-pub const ENDOAVS_PROGRAM_ID: Pubkey = pubkey!("endoLNCKTqDn8gSVnN2hDdpgACUPWHZTwoYnnMybpAT");
-
 pub fn read_account_data(filename: &str) -> Vec<u8> {
     read_file(find_file(filename).unwrap_or_else(|| {
         panic!("Unable to load {}", filename);
@@ -67,7 +65,6 @@ pub fn add_mint(
 
 pub async fn get_context() -> Rc<RefCell<ProgramTestContext>> {
     let mut pt = ProgramTest::default();
-    pt.add_program("endoavs", ENDOAVS_PROGRAM_ID, None);
 
     let admin = read_keypair_file("tests/fixtures/admin.json").unwrap();
 
@@ -110,7 +107,7 @@ pub async fn get_keypair(file_path: &str) -> Keypair {
 pub async fn create_payer_from_file(context: &mut ProgramTestContext, file_path: &str) -> Keypair {
     let keypair = read_keypair_file(file_path).unwrap();
 
-    transfer(context, &keypair.pubkey(), 100_000_000_000).await;
+    transfer(context, &keypair.pubkey(), 1_000_000_000).await;
 
     keypair
 }
@@ -118,7 +115,7 @@ pub async fn create_payer_from_file(context: &mut ProgramTestContext, file_path:
 pub async fn create_user(context: &mut ProgramTestContext) -> Keypair {
     let keypair = Keypair::new();
 
-    transfer(context, &keypair.pubkey(), 100_000_000_000).await;
+    transfer(context, &keypair.pubkey(), 1_000_000_000).await;
 
     keypair
 }

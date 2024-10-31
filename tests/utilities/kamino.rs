@@ -59,7 +59,8 @@ pub const RESERVE_USDC_LIQUIDITY_FEE_VAULT: Pubkey =
 pub const RESERVE_USDC_FARM_STATE: Pubkey = pubkey!("11111111111111111111111111111111"); // ???
 
 pub fn load_kamino_fixtures(pt: &mut ProgramTest) {
-    pt.add_program("klend", KLEND_PROGRAM_ID, None);
+    // pt.add_program("klend", KLEND_PROGRAM_ID, None);
+    pt.add_program("kamino_lending", KLEND_PROGRAM_ID, None);
     pt.add_program("kfarm", KFARM_PROGRAM_ID, None);
     pt.add_program("klend_refresh_price", KLEND_SCOPE_PRICES_PROGRAM_ID, None);
 
@@ -116,9 +117,12 @@ pub fn load_kamino_fixtures(pt: &mut ProgramTest) {
         "d4A2prbA2whesmvHaL88BH6Ewn5N4bTSU2Ze8P6Bc4Q.bin",
     );
 
+    // WSOL token account
+    let data = read_account_data("d4A2prbA2whesmvHaL88BH6Ewn5N4bTSU2Ze8P6Bc4Q.bin");
+    let reserve = Reserve::try_from_slice(&data[8..]).unwrap();
     pt.add_account_with_file_data(
         RESERVE_SOL_LIQUIDITY_SUPPLY_VAULT,
-        LAMPORTS_PER_SOL,
+        reserve.liquidity.available_amount,
         spl_token::id(),
         "GafNuUXj9rxGLn4y79dPu6MHSuPWeJR6UtTWuexpGh3U.bin",
     );
@@ -176,6 +180,7 @@ pub fn dump_reserve(address: &Pubkey) {
     let reserve = Reserve::try_from_slice(&data[8..]).unwrap(); // Skip discriminator !
 
     // println!("lending market {:?}", reserve.lending_market);
+    println!("reserve last update: {}", reserve.last_update.slot);
     println!("reserve decimals {:#?}", reserve.liquidity.mint_decimals);
     println!(
         "reserve available_amount {:#?}",
@@ -188,8 +193,13 @@ pub fn dump_reserve(address: &Pubkey) {
     );
 
     println!(
-        "reserve borrowed_amount_sf {:#?}",
+        "reserve borrowed_amount_sf {}",
         reserve.liquidity.borrowed_amount_sf
+    );
+    println!(
+        "reserve market_price_sf {} {}",
+        reserve.liquidity.market_price_sf,
+        Fraction::from_bits(reserve.liquidity.market_price_sf)
     );
 
     // let reserve_liquidity_supply = Fraction::from(reserve.liquidity.available_amount)
@@ -341,6 +351,41 @@ pub fn compose_klend_deposit_reserve_liquidity_ix(
     }
 }
 
+pub fn compose_klend_redeem_reserve_collateral_ix(
+    owner: &Pubkey,
+    reserve: &Pubkey,
+    lending_market: &Pubkey,
+    lending_market_authority: &Pubkey,
+    reserve_liquidity_mint: &Pubkey,
+    reserve_liquidity_supply: &Pubkey,
+    reserve_collateral_mint: &Pubkey,
+    user_source_collateral: &Pubkey,
+    user_destination_liquidity: &Pubkey,
+    collateral_amount: u64,
+) -> Instruction {
+    let mut data = hash(b"global:redeem_reserve_collateral").as_ref()[0..8].to_vec();
+    data.extend_from_slice(&collateral_amount.to_le_bytes());
+
+    Instruction {
+        program_id: KLEND_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(*owner, true),
+            AccountMeta::new_readonly(*lending_market, false),
+            AccountMeta::new(*reserve, false),
+            AccountMeta::new_readonly(*lending_market_authority, false),
+            AccountMeta::new(*reserve_liquidity_mint, false),
+            AccountMeta::new(*reserve_collateral_mint, false),
+            AccountMeta::new(*reserve_liquidity_supply, false),
+            AccountMeta::new(*user_source_collateral, false),
+            AccountMeta::new(*user_destination_liquidity, false),
+            AccountMeta::new_readonly(spl_token::id(), false),
+            AccountMeta::new_readonly(spl_token::id(), false),
+            AccountMeta::new_readonly(sysvar::instructions::ID, false),
+        ],
+        data,
+    }
+}
+
 pub fn compose_klend_deposit_obligation_collateral_ix(
     owner: &Pubkey,
     obligation: &Pubkey,
@@ -362,6 +407,36 @@ pub fn compose_klend_deposit_obligation_collateral_ix(
             AccountMeta::new(*deposit_reserve, false),
             AccountMeta::new(*reserve_destination_collateral, false),
             AccountMeta::new(*user_source_collateral, false),
+            AccountMeta::new_readonly(spl_token::id(), false),
+            AccountMeta::new_readonly(sysvar::instructions::ID, false),
+        ],
+        data,
+    }
+}
+
+pub fn compose_klend_withdraw_obligation_collateral_ix(
+    owner: &Pubkey,
+    obligation: &Pubkey,
+    lending_market: &Pubkey,
+    lending_market_authority: &Pubkey,
+    withdraw_reserve: &Pubkey,
+    reserve_source_collateral: &Pubkey,
+    user_destination_collateral: &Pubkey,
+    collateral_amount: u64,
+) -> Instruction {
+    let mut data = hash(b"global:withdraw_obligation_collateral").as_ref()[0..8].to_vec();
+    data.extend_from_slice(&collateral_amount.to_le_bytes());
+
+    Instruction {
+        program_id: KLEND_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(*owner, true),
+            AccountMeta::new(*obligation, false),
+            AccountMeta::new_readonly(*lending_market, false),
+            AccountMeta::new_readonly(*lending_market_authority, false),
+            AccountMeta::new(*withdraw_reserve, false),
+            AccountMeta::new(*reserve_source_collateral, false),
+            AccountMeta::new(*user_destination_collateral, false),
             AccountMeta::new_readonly(spl_token::id(), false),
             AccountMeta::new_readonly(sysvar::instructions::ID, false),
         ],
@@ -399,6 +474,144 @@ pub fn compose_klend_borrow_obligation_liquidity_ix(
             AccountMeta::new(KLEND_PROGRAM_ID, false),
             AccountMeta::new_readonly(spl_token::id(), false),
             AccountMeta::new_readonly(sysvar::instructions::ID, false),
+        ],
+        data,
+    }
+}
+
+pub fn compose_klend_repay_obligation_liquidity_ix(
+    owner: &Pubkey,
+    obligation: &Pubkey,
+    lending_market: &Pubkey,
+    repay_reserve: &Pubkey,
+    reserve_liquidity_mint: &Pubkey,
+    reserve_destination_liquidity: &Pubkey,
+    user_source_liquidity: &Pubkey,
+    liquidity_amount: u64,
+) -> Instruction {
+    let mut data = hash(b"global:repay_obligation_liquidity").as_ref()[0..8].to_vec();
+    data.extend_from_slice(&liquidity_amount.to_le_bytes());
+
+    Instruction {
+        program_id: KLEND_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(*owner, true),
+            AccountMeta::new(*obligation, false),
+            AccountMeta::new_readonly(*lending_market, false),
+            AccountMeta::new(*repay_reserve, false),
+            AccountMeta::new(*reserve_liquidity_mint, false),
+            AccountMeta::new(*reserve_destination_liquidity, false),
+            AccountMeta::new(*user_source_liquidity, false),
+            AccountMeta::new_readonly(spl_token::id(), false),
+            AccountMeta::new_readonly(sysvar::instructions::ID, false),
+        ],
+        data,
+    }
+}
+
+pub fn compose_mock_swap_sol_to_jitosol_ix(
+    owner: &Pubkey, // must be mint authority of jitosol for ease of test
+    owner_wsol_account: &Pubkey,
+    destination_account: &Pubkey,
+    owner_jitosol_account: &Pubkey,
+    amount: u64,
+    rate: u64,
+) -> Vec<Instruction> {
+    let mut instructions: Vec<Instruction> = vec![];
+
+    instructions.push(
+        spl_token::instruction::transfer(
+            &spl_token::id(),
+            owner_wsol_account,
+            &destination_account,
+            owner,
+            &[owner],
+            amount,
+        )
+        .unwrap(),
+    );
+
+    let jitosol_amount = amount * 10000 / rate;
+    instructions.push(
+        spl_token::instruction::mint_to(
+            &spl_token::id(),
+            &JITOSOL_MINT,
+            owner_jitosol_account,
+            &owner,
+            &[],
+            jitosol_amount,
+        )
+        .unwrap(),
+    );
+
+    instructions
+}
+
+pub fn compose_klend_flash_borrow_ix(
+    user: &Pubkey,
+    lending_market: &Pubkey,
+    lending_market_authority: &Pubkey,
+    reserve: &Pubkey,
+    reserve_liquidity_mint: &Pubkey,
+    reserve_source_liquidity: &Pubkey,
+    user_destination_liquidity: &Pubkey,
+    reserve_liquidity_fee_receiver: &Pubkey,
+    liquidity_amount: u64,
+) -> Instruction {
+    let mut data = hash(b"global:flash_borrow_reserve_liquidity").as_ref()[0..8].to_vec();
+    data.extend_from_slice(&liquidity_amount.to_le_bytes());
+
+    Instruction {
+        program_id: KLEND_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(*user, true),
+            AccountMeta::new_readonly(*lending_market_authority, false),
+            AccountMeta::new_readonly(*lending_market, false),
+            AccountMeta::new(*reserve, false),
+            AccountMeta::new_readonly(*reserve_liquidity_mint, false),
+            AccountMeta::new(*reserve_source_liquidity, false),
+            AccountMeta::new(*user_destination_liquidity, false),
+            AccountMeta::new(*reserve_liquidity_fee_receiver, false),
+            AccountMeta::new(KLEND_PROGRAM_ID, false),
+            AccountMeta::new(KLEND_PROGRAM_ID, false),
+            AccountMeta::new_readonly(sysvar::instructions::ID, false),
+            AccountMeta::new_readonly(spl_token::id(), false),
+        ],
+        data,
+    }
+}
+
+pub fn compose_klend_flash_repay_ix(
+    user: &Pubkey,
+    lending_market: &Pubkey,
+    lending_market_authority: &Pubkey,
+    reserve: &Pubkey,
+    reserve_liquidity_mint: &Pubkey,
+    reserve_destination_liquidity: &Pubkey,
+    user_source_liquidity: &Pubkey,
+    reserve_liquidity_fee_receiver: &Pubkey,
+    liquidity_amount: u64,
+    borrow_instruction_index: u8,
+) -> Instruction {
+    let mut data = hash(b"global:flash_repay_reserve_liquidity").as_ref()[0..8].to_vec();
+    data.extend_from_slice(&liquidity_amount.to_le_bytes());
+    data.push(borrow_instruction_index);
+
+    Instruction {
+        program_id: KLEND_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(*user, true),
+            AccountMeta::new_readonly(*lending_market_authority, false),
+            AccountMeta::new_readonly(*lending_market, false),
+            AccountMeta::new(*reserve, false),
+            AccountMeta::new_readonly(*reserve_liquidity_mint, false),
+            AccountMeta::new(*reserve_destination_liquidity, false),
+            AccountMeta::new(*user_source_liquidity, false),
+            AccountMeta::new(*reserve_liquidity_fee_receiver, false),
+            AccountMeta::new(KLEND_PROGRAM_ID, false),
+            AccountMeta::new(KLEND_PROGRAM_ID, false),
+            AccountMeta::new_readonly(sysvar::instructions::ID, false),
+            AccountMeta::new_readonly(spl_token::id(), false),
         ],
         data,
     }
