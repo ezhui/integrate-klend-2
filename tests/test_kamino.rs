@@ -6,7 +6,8 @@ mod utilities;
 use context::{MintType, RateXTestContext};
 use solana_program_test::*;
 use utilities::kamino::{
-    dump_reserve, JITOSOL_MINT, MAIN_MARKET, RESERVE_JITOSOL_STATE, RESERVE_SOL_STATE,
+    dump_reserve, EXAMPLE_OBLIGATION, JITOSOL_MINT, MAIN_MARKET, RESERVE_JITOSOL_STATE,
+    RESERVE_SOL_STATE, RESERVE_USDC_STATE,
 };
 
 #[tokio::test]
@@ -87,5 +88,17 @@ async fn test_leverage_borrow() {
     rtc.mint_token_by_type(admin, 35_000_000_000, MintType::JitoSol)
         .await;
 
-    admin.leverage_borrow(&obligation).await;
+    // 51.6 jitosol， borrow 20 sol
+    admin.enter_leverage_borrow(&obligation).await;
+
+    admin.leave_leverage_borrow(&obligation).await;
+}
+
+#[tokio::test]
+async fn test_obligation() {
+    let rtc = RateXTestContext::new().await;
+    let admin = &rtc.users[0];
+
+    admin.dump_obligation(&EXAMPLE_OBLIGATION).await;
+    dump_reserve(&RESERVE_USDC_STATE);
 }

@@ -2,9 +2,9 @@
 #![allow(dead_code)]
 
 use crate::utilities::helper::{
-    create_token_account, create_user, get_associated_token_address, get_keypair,
+    create_token_account, create_user, get_account, get_associated_token_address, get_keypair,
     get_or_create_associated_token_address, get_sysvar_clock, get_token_balance,
-    process_instructions,
+    process_instructions, transfer,
 };
 use crate::utilities::kamino::{
     compose_klend_borrow_obligation_liquidity_ix, compose_klend_deposit_obligation_collateral_ix,
@@ -13,14 +13,18 @@ use crate::utilities::kamino::{
     compose_klend_init_obligation_ix, compose_klend_init_user_metadata_ix,
     compose_klend_redeem_reserve_collateral_ix, compose_klend_refresh_obligation_ix,
     compose_klend_refresh_reserve_ix, compose_klend_repay_obligation_liquidity_ix,
-    compose_klend_withdraw_obligation_collateral_ix, compose_mock_swap_sol_to_jitosol_ix,
-    JITOSOL_MINT, KLEND_PROGRAM_ID, MAIN_MARKET, MAIN_MARKET_AUTHORITY,
-    RESERVE_JITOSOL_COLLATERAL_MINT, RESERVE_JITOSOL_COLLATERAL_SUPPLY_VAULT,
-    RESERVE_JITOSOL_LIQUIDITY_SUPPLY_VAULT, RESERVE_JITOSOL_STATE, RESERVE_SOL_COLLATERAL_MINT,
-    RESERVE_SOL_FARM_STATE, RESERVE_SOL_LIQUIDITY_FEE_VAULT, RESERVE_SOL_LIQUIDITY_MINT,
+    compose_klend_withdraw_obligation_collateral_ix, compose_mock_swap_jitosol_to_sol_ix,
+    compose_mock_swap_sol_to_jitosol_ix, JITOSOL_MINT, KLEND_PROGRAM_ID, MAIN_MARKET,
+    MAIN_MARKET_AUTHORITY, RESERVE_JITOSOL_COLLATERAL_MINT,
+    RESERVE_JITOSOL_COLLATERAL_SUPPLY_VAULT, RESERVE_JITOSOL_LIQUIDITY_SUPPLY_VAULT,
+    RESERVE_JITOSOL_STATE, RESERVE_SOL_COLLATERAL_MINT, RESERVE_SOL_FARM_STATE,
+    RESERVE_SOL_LIQUIDITY_FEE_VAULT, RESERVE_SOL_LIQUIDITY_MINT,
     RESERVE_SOL_LIQUIDITY_SUPPLY_VAULT, RESERVE_SOL_STATE, RESERVE_USDC_LIQUIDITY_FEE_VAULT,
     RESERVE_USDC_LIQUIDITY_MINT, RESERVE_USDC_LIQUIDITY_SUPPLY_VAULT, RESERVE_USDC_STATE,
 };
+use borsh::BorshDeserialize;
+use fixed::types::U68F60 as Fraction;
+use klend::Obligation;
 use solana_program::address_lookup_table;
 use solana_program::pubkey::Pubkey;
 use solana_program_test::ProgramTestContext;
@@ -659,7 +663,7 @@ impl UserTestContext {
         process_instructions(context, &self.user, &instructions).await;
     }
 
-    pub async fn leverage_borrow(&self, obligation: &Pubkey) {
+    pub async fn enter_leverage_borrow(&self, obligation: &Pubkey) {
         assert_eq!(self.user.pubkey(), self.admin.pubkey()); // must be mint authority of jitosol for ease of test
         let context: &mut ProgramTestContext = &mut self.context.borrow_mut();
 
@@ -739,7 +743,7 @@ impl UserTestContext {
             &RESERVE_JITOSOL_COLLATERAL_MINT,
             &user_jitosol_account,
             &user_jitosol_collateral_account,
-            51_600_000_000,
+            51_666_666_666,
         ));
 
         // 4. Deposit obligation collateral
@@ -761,7 +765,7 @@ impl UserTestContext {
             &RESERVE_JITOSOL_STATE,
             &RESERVE_JITOSOL_COLLATERAL_SUPPLY_VAULT,
             &user_jitosol_collateral_account,
-            51_600_000_000 * 10000 / 10100,
+            51548942197, // hardcode
         ));
 
         // 5. Borrow obligation liquidity: 20 sol
@@ -809,6 +813,196 @@ impl UserTestContext {
         ));
 
         process_instructions(context, &self.user, &instructions).await;
+    }
+
+    pub async fn leave_leverage_borrow(&self, obligation: &Pubkey) {
+        assert_eq!(self.user.pubkey(), self.admin.pubkey()); // must be mint authority of jitosol for ease of test
+        let context: &mut ProgramTestContext = &mut self.context.borrow_mut();
+
+        let mut instructions: Vec<Instruction> = vec![];
+
+        // 1. Flash borrow 20 sol
+        let user_source_liquidity = Keypair::new();
+        create_token_account(
+            context,
+            &self.user,
+            &user_source_liquidity,
+            &spl_token::native_mint::id(),
+            &self.user.pubkey(),
+            0,
+        )
+        .await
+        .unwrap();
+
+        instructions.push(compose_klend_flash_borrow_ix(
+            &self.user.pubkey(),
+            &MAIN_MARKET,
+            &MAIN_MARKET_AUTHORITY,
+            &RESERVE_SOL_STATE,
+            &RESERVE_SOL_LIQUIDITY_MINT,
+            &RESERVE_SOL_LIQUIDITY_SUPPLY_VAULT,
+            &user_source_liquidity.pubkey(),
+            &RESERVE_SOL_LIQUIDITY_FEE_VAULT,
+            20_000_000_000,
+        ));
+
+        // 2. Repay obligation liquidity: 20 sol
+        instructions.push(compose_klend_refresh_reserve_ix(
+            &RESERVE_JITOSOL_STATE,
+            &MAIN_MARKET,
+        ));
+
+        instructions.push(compose_klend_refresh_reserve_ix(
+            &RESERVE_SOL_STATE,
+            &MAIN_MARKET,
+        ));
+
+        instructions.push(compose_klend_refresh_obligation_ix(
+            obligation,
+            &MAIN_MARKET,
+            &vec![RESERVE_JITOSOL_STATE, RESERVE_SOL_STATE],
+        ));
+
+        instructions.push(compose_klend_repay_obligation_liquidity_ix(
+            &self.user.pubkey(),
+            obligation,
+            &MAIN_MARKET,
+            &RESERVE_SOL_STATE,
+            &RESERVE_SOL_LIQUIDITY_MINT,
+            &RESERVE_SOL_LIQUIDITY_SUPPLY_VAULT,
+            &user_source_liquidity.pubkey(),
+            20_000_000_000,
+        ));
+
+        // 3. Withdraw obligation collateral
+        let user_destination_collateral =
+            get_associated_token_address(&self.user.pubkey(), &RESERVE_JITOSOL_COLLATERAL_MINT)
+                .await;
+        instructions.push(compose_klend_refresh_reserve_ix(
+            &RESERVE_SOL_STATE,
+            &MAIN_MARKET,
+        ));
+
+        instructions.push(compose_klend_refresh_reserve_ix(
+            &RESERVE_JITOSOL_STATE,
+            &MAIN_MARKET,
+        ));
+
+        instructions.push(compose_klend_refresh_obligation_ix(
+            obligation,
+            &MAIN_MARKET,
+            &vec![RESERVE_JITOSOL_STATE, RESERVE_SOL_STATE],
+        ));
+
+        instructions.push(compose_klend_withdraw_obligation_collateral_ix(
+            &self.user.pubkey(),
+            obligation,
+            &MAIN_MARKET,
+            &MAIN_MARKET_AUTHORITY,
+            &RESERVE_JITOSOL_STATE,
+            &RESERVE_JITOSOL_COLLATERAL_SUPPLY_VAULT,
+            &user_destination_collateral,
+            u64::MAX,
+        ));
+
+        // 4. Redeem reserve jitosol liquidity
+        let user_destination_liquidity = get_or_create_associated_token_address(
+            context,
+            &self.user,
+            &self.user.pubkey(),
+            &JITOSOL_MINT,
+        )
+        .await;
+
+        instructions.push(compose_klend_redeem_reserve_collateral_ix(
+            &self.user.pubkey(),
+            &RESERVE_JITOSOL_STATE,
+            &MAIN_MARKET,
+            &MAIN_MARKET_AUTHORITY,
+            &JITOSOL_MINT,
+            &RESERVE_JITOSOL_LIQUIDITY_SUPPLY_VAULT,
+            &RESERVE_JITOSOL_COLLATERAL_MINT,
+            &user_destination_collateral,
+            &user_destination_liquidity,
+            51548942197, // hardcode !
+        ));
+
+        // 5. Swap some jitosol to 20 sol
+        transfer(context, &self.user.pubkey(), 20_000_000_000).await;
+
+        let temp_source_account = Keypair::new();
+        create_token_account(
+            context,
+            &self.user,
+            &temp_source_account,
+            &spl_token::native_mint::id(),
+            &self.user.pubkey(),
+            20_000_000_000,
+        )
+        .await
+        .unwrap();
+
+        instructions.extend_from_slice(&compose_mock_swap_jitosol_to_sol_ix(
+            &self.user.pubkey(),
+            &user_source_liquidity.pubkey(),
+            &temp_source_account.pubkey(),
+            &user_destination_liquidity,
+            20_000_000_000,
+            12000,
+        ));
+
+        // 6. Flash repay 20 sol
+        instructions.push(compose_klend_flash_repay_ix(
+            &self.user.pubkey(),
+            &MAIN_MARKET,
+            &MAIN_MARKET_AUTHORITY,
+            &RESERVE_SOL_STATE,
+            &RESERVE_SOL_LIQUIDITY_MINT,
+            &RESERVE_SOL_LIQUIDITY_SUPPLY_VAULT,
+            &user_source_liquidity.pubkey(), // Must be the same one of borrow ix
+            &RESERVE_SOL_LIQUIDITY_FEE_VAULT,
+            20_000_000_000,
+            0,
+        ));
+
+        process_instructions(context, &self.user, &instructions).await;
+
+        // Check jitosol amount
+        let balance =
+            get_token_balance(&mut context.banks_client, user_destination_liquidity).await;
+        println!("jitosol balance: {}", balance);
+    }
+
+    pub async fn dump_obligation(&self, address: &Pubkey) {
+        let context: &mut ProgramTestContext = &mut self.context.borrow_mut();
+        let account = get_account(&mut context.banks_client, *address)
+            .await
+            .unwrap();
+
+        println!("obligation account: {}", account.data.len());
+
+        let obligation = Obligation::try_from_slice(&account.data[8..]).unwrap();
+        println!("obligation lending_market: {:?}", obligation.lending_market);
+
+        println!(
+            "obligation borrowed_assets_market_value: {:?}",
+            Fraction::from_bits(obligation.borrowed_assets_market_value_sf)
+        );
+
+        println!(
+            "obligation borrow_factor_adjusted_debt_value: {:?}",
+            Fraction::from_bits(obligation.borrow_factor_adjusted_debt_value_sf)
+        );
+
+        println!(
+            "obligation deposited_value: {:?}",
+            Fraction::from_bits(obligation.deposited_value_sf)
+        );
+
+        println!(
+            "obligation elevation_group: {:?}",
+            obligation.elevation_group
+        );
     }
 
     pub async fn klend_init_obligation_farms_for_reserve(

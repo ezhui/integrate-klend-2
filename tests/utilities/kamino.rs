@@ -58,6 +58,8 @@ pub const RESERVE_USDC_LIQUIDITY_FEE_VAULT: Pubkey =
     pubkey!("BbDUrk1bVtSixgQsPLBJFZEF7mwGstnD5joA1WzYvYFX"); // Token Account
 pub const RESERVE_USDC_FARM_STATE: Pubkey = pubkey!("11111111111111111111111111111111"); // ???
 
+pub const EXAMPLE_OBLIGATION: Pubkey = pubkey!("4w1qUuYbXpwYkqWzuovJFvP3TRt9EgEzYQv7kYY1nM3J");
+
 pub fn load_kamino_fixtures(pt: &mut ProgramTest) {
     // pt.add_program("klend", KLEND_PROGRAM_ID, None);
     pt.add_program("kamino_lending", KLEND_PROGRAM_ID, None);
@@ -171,6 +173,13 @@ pub fn load_kamino_fixtures(pt: &mut ProgramTest) {
         "3NJYftD5sjVfxSnUdZ1wVML8f3aC6mp1CXCL6L7TnU8C.bin",
     );
 
+    pt.add_account_with_file_data(
+        EXAMPLE_OBLIGATION,
+        LAMPORTS_PER_SOL,
+        KLEND_PROGRAM_ID,
+        "4w1qUuYbXpwYkqWzuovJFvP3TRt9EgEzYQv7kYY1nM3J.bin",
+    );
+
     println!("Load kamino fixtures.")
 }
 
@@ -216,6 +225,17 @@ pub fn dump_reserve(address: &Pubkey) {
         "reserve_liquidity_borrowed_f = {}, limit = {}",
         reserve_liquidity_borrowed_f, limit
     );
+
+    let total = Fraction::from(reserve.liquidity.available_amount)
+        + Fraction::from_bits(reserve.liquidity.borrowed_amount_sf);
+
+    let protocol_fee = Fraction::from_bits(reserve.liquidity.accumulated_protocol_fees_sf);
+
+    println!("reserve total = {}, protocol_fee = {}", total, protocol_fee);
+    println!(
+        "cumulativeBorrowRateBsf {:?}",
+        reserve.liquidity.cumulative_borrow_rate_bsf
+    )
 }
 
 pub fn compose_klend_init_user_metadata_ix(
@@ -532,11 +552,50 @@ pub fn compose_mock_swap_sol_to_jitosol_ix(
     );
 
     let jitosol_amount = amount * 10000 / rate;
+    println!("mint {} jitosol from {} sol", jitosol_amount, amount);
     instructions.push(
         spl_token::instruction::mint_to(
             &spl_token::id(),
             &JITOSOL_MINT,
             owner_jitosol_account,
+            &owner,
+            &[],
+            jitosol_amount,
+        )
+        .unwrap(),
+    );
+
+    instructions
+}
+
+pub fn compose_mock_swap_jitosol_to_sol_ix(
+    owner: &Pubkey, // must be mint authority of jitosol for ease of test
+    owner_wsol_account: &Pubkey,
+    source_wsol_account: &Pubkey,
+    owner_jitosol_account: &Pubkey,
+    amount: u64,
+    rate: u64,
+) -> Vec<Instruction> {
+    let mut instructions: Vec<Instruction> = vec![];
+
+    instructions.push(
+        spl_token::instruction::transfer(
+            &spl_token::id(),
+            source_wsol_account,
+            &owner_wsol_account,
+            owner,
+            &[owner],
+            amount,
+        )
+        .unwrap(),
+    );
+
+    let jitosol_amount = amount * 10000 / rate;
+    instructions.push(
+        spl_token::instruction::burn(
+            &spl_token::id(),
+            owner_jitosol_account,
+            &JITOSOL_MINT,
             &owner,
             &[],
             jitosol_amount,
